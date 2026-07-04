@@ -1,0 +1,11 @@
+[package]
+name = "masan-pass"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+llvm-sys = "221"
+libc     = "0.2"

@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "masan-rt",
+    "masan-pass"
+]
+
+# exclude = [
+#     "masan-pass",
+# ]
+resolver = "2"
