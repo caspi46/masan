@@ -71,3 +71,9 @@ p[2] = 3; // use-after-scope - arr is gone, but writing to its old location!
 # Poisoning & Unpoisoning
 - Poisoning: Writing a sentinel byte value into the shadow map for a given region 
 - Unpoisoning: Writing zero 
+# Redzone
+- Poisoned memory placed around a valid buffer 
+- handled by llvm pass 
+- timing of the redzone: 
+    - when variable is created => create redzone! 
+    - when variable's lifetime is done => drop redzone!

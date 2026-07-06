@@ -1,0 +1,7 @@
+pub enum Poison {
+    BUF_OVERFLOW,
+    USE_AFTER_SCOPE,
+    HEAP_OVERFLOW,
+    USE_AFTER_FREE,
+    UNPOISON,
+}
