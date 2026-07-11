@@ -7,5 +7,5 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-llvm-sys = "221"
+inkwell = { version = "0.9.0", features = ["llvm22-1"]}
 libc     = "0.2"
