@@ -13,7 +13,6 @@ const SHADOW_OFFSET: usize = 0x0000_1000_0000_0000;
 const SHADOW_SIZE: usize = 1 << 32;
 
 struct Shadow {
-    base: usize,
     poison_counter: u64,
     unpoison_counter: u64,
 }
@@ -42,8 +41,8 @@ impl Shadow {
 
     /// shadow_addr_of
     /// The corresponding shadow byte pointer of application address
-    fn shadow_addr_of(&self, app_addr: usize) -> usize {
-        (app_addr >> 3) + SHADOW_OFFSET
+    fn shadow_addr_of(&self, app_addr: usize) -> *mut u8 {
+        ((app_addr >> 3) + SHADOW_OFFSET) as *mut u8
     }
 
     /// poison
@@ -53,49 +52,41 @@ impl Shadow {
     /// - Convert addr to its shadow address
     /// - Figure out how many shadow bytes to write
     /// - Write value into all of them
-    fn poison(&mut self, addr: *mut u8, size: usize, value: Poison) {
-        let addr_bytes = if size % 8 == 0 {
-            size / 8
-        } else {
-            (size / 8) + 1
-        };
+    fn poison(&mut self, addr: *mut u8, size: usize, value: u8) {
+        let base_shadow = self.shadow_addr_of(addr as usize);
 
-        for i in 0..addr_bytes {
-            let shadow_byte = self.shadow_addr_of(addr as usize + i * 8) as *mut u8;
-            let p_value = match value {
-                BUF_OVERFLOW => 0xf1,
-                USE_AFTER_SCOPE => 0xf8,
-                HEAP_OVERFLOW => 0xfa,
-                USE_AFTER_FREE => 0xfd,
-                UNPOISON => 0x00, // stay!
-            };
+        let total_shadow = (size + 7) / 8;
+
+        for i in 0..total_shadow {
             unsafe {
-                std::ptr::write(shadow_byte, p_value);
+                std::ptr::write(base_shadow.add(i), value);
             }
             self.poison_counter += 1;
         }
-
-        todo!("test required");
     }
 
     /// unpoison
     /// Same as poison but writes 0x00 (fully valid)
     /// Called when a variable comes into scope
     fn unpoison(&mut self, addr: *mut u8, size: usize) {
-        let addr_bytes = if size % 8 == 0 {
-            size / 8
-        } else {
-            (size / 8) + 1
-        };
+        let base_shadow = self.shadow_addr_of(addr as usize);
+        let full_chunks = size / 8;
+        let remainder = size % 8;
 
-        for i in 0..addr_bytes {
-            let shadow_byte = self.shadow_addr_of(addr as usize + i * 8) as *mut u8;
+        for i in 0..full_chunks {
             unsafe {
-                std::ptr::write(shadow_byte, 0x00);
+                std::ptr::write(base_shadow.add(i), 0x00);
             }
             self.unpoison_counter += 1;
         }
-        todo!("test required");
+
+        if remainder > 0 {
+            unsafe {
+                let partial_shadow = base_shadow.add(full_chunks);
+                std::ptr::write(partial_shadow, remainder as u8);
+            }
+            self.unpoison_counter += 1;
+        }
     }
 
     /// check
@@ -103,28 +94,38 @@ impl Shadow {
     /// Returns None if valid
     /// Handles the partial validity case (1-7)
     /// Returns Some(Poison::...) if poisoned so the caller can report the right error
-    fn check(&self, addr: usize, access_size: usize) -> Option<Poison> {
-        let addr_bytes = if access_size % 8 == 0 {
-            access_size / 8
-        } else {
-            (access_size / 8) + 1
-        };
+    fn check(&self, addr: usize, access_size: usize, is_write: bool) -> Option<u8> {
+        let start_addr = addr;
+        let end_addr = addr + access_size - 1;
 
-        for i in 0..addr_bytes {
-            let shadow_byte = self.shadow_addr_of(addr as usize + i * 8) as *mut u8;
-            unsafe {
-                let state_byte = std::ptr::read(shadow_byte);
-                let state = match state_byte {
-                    0xf1 => Some(BUF_OVERFLOW),
-                    0xf8 => Some(USE_AFTER_SCOPE),
-                    0xfa => Some(HEAP_OVERFLOW),
-                    0xfd => Some(USE_AFTER_FREE),
-                    0x00 => Some(UNPOISON),
-                    _ => None,
-                };
-                return state;
+        let start_shadow = self.shadow_addr_of(start_addr);
+        let end_shadow = self.shadow_addr_of(end_addr);
+
+        let byte_offset = (addr & 7) as u8;
+
+        let mut curr_shadow = start_shadow;
+        unsafe {
+            while curr_shadow <= end_shadow {
+                let state_byte = std::ptr::read(curr_shadow);
+
+                if state_byte != 0 {
+                    if state_byte >= 0xf0 {
+                        return Some(state_byte);
+                    }
+
+                    if byte_offset + (access_size as u8) > state_byte {
+                        let next_shadow = curr_shadow.add(1);
+                        let neighbor_poison = std::ptr::read(next_shadow);
+
+                        if neighbor_poison >= 0xf0 {
+                            return Some(neighbor_poison);
+                        }
+                        return Some(0xf1);
+                    }
+                }
+                curr_shadow = curr_shadow.add(1);
             }
         }
-        return None;
+        None
     }
 }
