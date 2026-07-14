@@ -130,8 +130,16 @@ impl Shadow {
                         8 - word_offset
                     };
 
+                    // does our access reach beyond the valid prefix?
                     if word_offset + bytes_in_word > state_byte {
-                        return Some(state_byte);
+                        let next_shadow = curr_shadow.add(1);
+                        let neighbor = std::ptr::read(next_shadow);
+
+                        return match neighbor {
+                            0xf1 => Some(0xf1),
+                            0xfa => Some(0xfa),
+                            _ => Some(0xf1),
+                        };
                     }
                 }
                 curr_shadow = curr_shadow.add(1);
@@ -282,7 +290,7 @@ mod tests {
         let value = unsafe { std::ptr::read(shadow_addr_1 as *const u8) };
         assert_eq!(value, 0x02, "Value != 0x01");
 
-        let result = shadow.check(addr as usize, 18);
-        assert_eq!(result, None, "Result != None");
+        let result = shadow.check(addr as usize, 19);
+        assert_eq!(result, Some(0xf1), "Result != None");
     }
 }
