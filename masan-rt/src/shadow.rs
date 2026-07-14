@@ -86,7 +86,6 @@ impl Shadow {
             unsafe {
                 std::ptr::write(base_shadow.add(i), 0x00);
             }
-            self.unpoison_counter += 1;
         }
 
         if remainder > 0 {
@@ -94,8 +93,8 @@ impl Shadow {
                 let partial_shadow = base_shadow.add(full_chunks);
                 std::ptr::write(partial_shadow, remainder as u8);
             }
-            self.unpoison_counter += 1;
         }
+        self.unpoison_counter += 1;
     }
 
     /// check
@@ -110,8 +109,6 @@ impl Shadow {
         let start_shadow = self.shadow_addr_of(start_addr);
         let end_shadow = self.shadow_addr_of(end_addr);
 
-        let byte_offset = (addr & 7) as u8;
-
         let mut curr_shadow = start_shadow;
         unsafe {
             while curr_shadow <= end_shadow {
@@ -122,14 +119,19 @@ impl Shadow {
                         return Some(state_byte);
                     }
 
-                    if byte_offset + (access_size as u8) > state_byte {
-                        let next_shadow = curr_shadow.add(1);
-                        let neighbor_poison = std::ptr::read(next_shadow);
+                    // for partial address
+                    let shadow_index = curr_shadow as usize - start_shadow as usize;
+                    let word_addr = addr + (shadow_index * 8);
+                    let word_offset = (word_addr & 7) as u8;
 
-                        if neighbor_poison >= 0xf0 {
-                            return Some(neighbor_poison);
-                        }
-                        return Some(0xf1);
+                    let bytes_in_word = if curr_shadow == end_shadow {
+                        ((addr + access_size - 1) & 7) as u8 + 1 - word_offset
+                    } else {
+                        8 - word_offset
+                    };
+
+                    if word_offset + bytes_in_word > state_byte {
+                        return Some(state_byte);
                     }
                 }
                 curr_shadow = curr_shadow.add(1);
@@ -251,6 +253,36 @@ mod tests {
         assert_eq!(value, 0x06, "Value != 0x06");
 
         let result = shadow.check(addr as usize, 6);
+        assert_eq!(result, None, "Result != None");
+    }
+
+    #[test]
+    fn test_full_partial() {
+        let mut shadow = Shadow::new();
+        shadow.init();
+
+        let addr: *mut u8 = 0x602000000010 as *mut u8;
+        let shadow_addr = shadow.shadow_addr_of(addr as usize);
+
+        println!("app addr:      {:#x}", addr as usize);
+        println!("shadow addr:   {:#x}", shadow_addr as usize);
+        println!("SHADOW_OFFSET: {:#x}", SHADOW_OFFSET);
+        println!("SHADOW_SIZE:   {:#x}", SHADOW_SIZE);
+
+        assert!(shadow_addr as usize >= SHADOW_OFFSET);
+        assert!((shadow_addr as usize) < SHADOW_OFFSET + SHADOW_SIZE);
+
+        // poison first
+        shadow.poison(addr, 18, 0xf1);
+        let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
+        assert_eq!(value, 0xf1, "Value != 0xf1");
+
+        shadow.unpoison(addr, 18);
+        let shadow_addr_1 = shadow.shadow_addr_of(addr as usize + 16);
+        let value = unsafe { std::ptr::read(shadow_addr_1 as *const u8) };
+        assert_eq!(value, 0x02, "Value != 0x01");
+
+        let result = shadow.check(addr as usize, 18);
         assert_eq!(result, None, "Result != None");
     }
 }
