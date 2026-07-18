@@ -2,6 +2,8 @@ use crate::poison::Poison::{
     self, BUF_OVERFLOW, HEAP_OVERFLOW, UNPOISON, USE_AFTER_FREE, USE_AFTER_SCOPE,
 };
 use libc::{mmap, MAP_ANON, MAP_FAILED, MAP_FIXED, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+use std::cell::RefCell;
+use std::sync::{Mutex, OnceLock};
 
 // Shadow memory is mapped at a fixed offset chosen to sit in the
 // middle of the macOS/arm64 address space gap — above the heap
@@ -12,6 +14,8 @@ use libc::{mmap, MAP_ANON, MAP_FAILED, MAP_FIXED, MAP_PRIVATE, PROT_READ, PROT_W
 const SHADOW_OFFSET: usize = 0x100000000000;
 const SHADOW_SIZE: usize = 1 << 44; // 16TB
 
+static SHADOW_INSTANCE: OnceLock<Mutex<Shadow>> = OnceLock::new();
+
 #[derive(Debug, Clone, Copy)]
 pub struct Shadow {
     poison_counter: u64,
@@ -19,18 +23,23 @@ pub struct Shadow {
 }
 
 impl Shadow {
-    /// new
-    ///
-    fn new() -> Self {
-        Self {
+    /// lazy_init
+    fn lazy_init() -> Self {
+        let mut s = Self {
             poison_counter: 0,
             unpoison_counter: 0,
-        }
+        };
+        s.init();
+        s
+    }
+
+    pub fn global() -> &'static Mutex<Self> {
+        SHADOW_INSTANCE.get_or_init(|| Mutex::new(Self::lazy_init()))
     }
     /// init
     /// mmap the shadow region at SHADOW_OFFSET
     /// All memory start as valid until poison something explicitly
-    pub fn init(self) {
+    fn init(&mut self) {
         unsafe {
             // set up the shadow memory location
             let result = mmap(
@@ -61,7 +70,7 @@ impl Shadow {
     /// - Convert addr to its shadow address
     /// - Figure out how many shadow bytes to write
     /// - Write value into all of them
-    fn poison(&mut self, addr: *mut u8, size: usize, value: u8) {
+    pub fn poison(&mut self, addr: *mut u8, size: usize, value: u8) {
         let base_shadow = self.shadow_addr_of(addr as usize);
 
         let total_shadow = (size + 7) / 8;
@@ -77,7 +86,7 @@ impl Shadow {
     /// unpoison
     /// Same as poison but writes 0x00 (fully valid)
     /// Called when a variable comes into scope
-    fn unpoison(&mut self, addr: *mut u8, size: usize) {
+    pub fn unpoison(&mut self, addr: *mut u8, size: usize) {
         let base_shadow = self.shadow_addr_of(addr as usize);
         let full_chunks = size / 8;
         let remainder = size % 8;
@@ -102,7 +111,7 @@ impl Shadow {
     /// Returns None if valid
     /// Handles the partial validity case (1-7)
     /// Returns Some(Poison::...) if poisoned so the caller can report the right error
-    fn check(&self, addr: usize, access_size: usize) -> Option<u8> {
+    pub fn check(&self, addr: usize, access_size: usize) -> Option<u8> {
         let start_addr = addr;
         let end_addr = addr + access_size - 1;
 
@@ -147,6 +156,14 @@ impl Shadow {
         }
         None
     }
+
+    fn get_poison_counter(self) -> u64 {
+        self.poison_counter
+    }
+
+    fn get_unpoison_counter(self) -> u64 {
+        self.unpoison_counter
+    }
 }
 
 mod tests {
@@ -155,142 +172,136 @@ mod tests {
     const SHADOW_SIZE: usize = 1 << 44; // 16TB
     #[test]
     fn test_init() {
-        let shadow = Shadow::new();
-        shadow.init();
+        if let Ok(mut shadow) = Shadow::global().lock() {}
     }
 
     #[test]
     fn test_poison() {
-        let mut shadow = Shadow::new();
-        shadow.init();
+        if let Ok(mut shadow) = Shadow::global().lock() {
+            let addr: *mut u8 = 0x602000000010 as *mut u8;
+            let shadow_addr = shadow.shadow_addr_of(addr as usize);
 
-        let addr: *mut u8 = 0x602000000010 as *mut u8;
-        let shadow_addr = shadow.shadow_addr_of(addr as usize);
+            println!("app addr:      {:#x}", addr as usize);
+            println!("shadow addr:   {:#x}", shadow_addr as usize);
+            println!("SHADOW_OFFSET: {:#x}", SHADOW_OFFSET);
+            println!("SHADOW_SIZE:   {:#x}", SHADOW_SIZE);
 
-        println!("app addr:      {:#x}", addr as usize);
-        println!("shadow addr:   {:#x}", shadow_addr as usize);
-        println!("SHADOW_OFFSET: {:#x}", SHADOW_OFFSET);
-        println!("SHADOW_SIZE:   {:#x}", SHADOW_SIZE);
+            assert!(shadow_addr as usize >= SHADOW_OFFSET);
+            assert!((shadow_addr as usize) < SHADOW_OFFSET + SHADOW_SIZE);
 
-        assert!(shadow_addr as usize >= SHADOW_OFFSET);
-        assert!((shadow_addr as usize) < SHADOW_OFFSET + SHADOW_SIZE);
-
-        shadow.poison(addr, 64, 0xf1);
-        let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
-        println!("value after poison: {}", value);
-        assert_eq!(value, 0xf1, "Value != 0xf1");
+            shadow.poison(addr, 64, 0xf1);
+            let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
+            println!("value after poison: {}", value);
+            assert_eq!(value, 0xf1, "Value != 0xf1");
+        }
     }
 
     #[test]
     fn test_unpoison() {
-        let mut shadow = Shadow::new();
-        shadow.init();
+        if let Ok(mut shadow) = Shadow::global().lock() {
+            let addr: *mut u8 = 0x602000000010 as *mut u8;
+            let shadow_addr = shadow.shadow_addr_of(addr as usize);
 
-        let addr: *mut u8 = 0x602000000010 as *mut u8;
-        let shadow_addr = shadow.shadow_addr_of(addr as usize);
+            println!("app addr:      {:#x}", addr as usize);
+            println!("shadow addr:   {:#x}", shadow_addr as usize);
+            println!("SHADOW_OFFSET: {:#x}", SHADOW_OFFSET);
+            println!("SHADOW_SIZE:   {:#x}", SHADOW_SIZE);
 
-        println!("app addr:      {:#x}", addr as usize);
-        println!("shadow addr:   {:#x}", shadow_addr as usize);
-        println!("SHADOW_OFFSET: {:#x}", SHADOW_OFFSET);
-        println!("SHADOW_SIZE:   {:#x}", SHADOW_SIZE);
+            assert!(shadow_addr as usize >= SHADOW_OFFSET);
+            assert!((shadow_addr as usize) < SHADOW_OFFSET + SHADOW_SIZE);
 
-        assert!(shadow_addr as usize >= SHADOW_OFFSET);
-        assert!((shadow_addr as usize) < SHADOW_OFFSET + SHADOW_SIZE);
+            // poison first
+            shadow.poison(addr, 64, 0xf1);
+            let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
+            println!("value after poison: {}", value);
+            assert_eq!(value, 0xf1, "Value != 0xf1");
 
-        // poison first
-        shadow.poison(addr, 64, 0xf1);
-        let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
-        println!("value after poison: {}", value);
-        assert_eq!(value, 0xf1, "Value != 0xf1");
-
-        // unpoison
-        shadow.unpoison(addr, 64);
-        let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
-        println!("value after unpoison: {}", value);
-        assert_eq!(value, 0, "Value = 0xf1");
+            // unpoison
+            shadow.unpoison(addr, 64);
+            let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
+            println!("value after unpoison: {}", value);
+            assert_eq!(value, 0, "Value = 0xf1");
+        }
     }
 
     #[test]
     fn test_check() {
-        let mut shadow = Shadow::new();
-        shadow.init();
+        if let Ok(mut shadow) = Shadow::global().lock() {
+            let addr: *mut u8 = 0x602000000010 as *mut u8;
+            let shadow_addr = shadow.shadow_addr_of(addr as usize);
 
-        let addr: *mut u8 = 0x602000000010 as *mut u8;
-        let shadow_addr = shadow.shadow_addr_of(addr as usize);
+            println!("app addr:      {:#x}", addr as usize);
+            println!("shadow addr:   {:#x}", shadow_addr as usize);
+            println!("SHADOW_OFFSET: {:#x}", SHADOW_OFFSET);
+            println!("SHADOW_SIZE:   {:#x}", SHADOW_SIZE);
 
-        println!("app addr:      {:#x}", addr as usize);
-        println!("shadow addr:   {:#x}", shadow_addr as usize);
-        println!("SHADOW_OFFSET: {:#x}", SHADOW_OFFSET);
-        println!("SHADOW_SIZE:   {:#x}", SHADOW_SIZE);
+            assert!(shadow_addr as usize >= SHADOW_OFFSET);
+            assert!((shadow_addr as usize) < SHADOW_OFFSET + SHADOW_SIZE);
 
-        assert!(shadow_addr as usize >= SHADOW_OFFSET);
-        assert!((shadow_addr as usize) < SHADOW_OFFSET + SHADOW_SIZE);
+            // poison first
+            shadow.poison(addr, 64, 0xf1);
+            let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
+            assert_eq!(value, 0xf1, "Value != 0xf1");
 
-        // poison first
-        shadow.poison(addr, 64, 0xf1);
-        let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
-        assert_eq!(value, 0xf1, "Value != 0xf1");
-
-        let result = shadow.check(addr as usize, 64);
-        assert_ne!(result, None, "Result == None");
+            let result = shadow.check(addr as usize, 64);
+            assert_ne!(result, None, "Result == None");
+        }
     }
 
     #[test]
     fn test_partial() {
-        let mut shadow = Shadow::new();
-        shadow.init();
+        if let Ok(mut shadow) = Shadow::global().lock() {
+            let addr: *mut u8 = 0x602000000010 as *mut u8;
+            let shadow_addr = shadow.shadow_addr_of(addr as usize);
 
-        let addr: *mut u8 = 0x602000000010 as *mut u8;
-        let shadow_addr = shadow.shadow_addr_of(addr as usize);
+            println!("app addr:      {:#x}", addr as usize);
+            println!("shadow addr:   {:#x}", shadow_addr as usize);
+            println!("SHADOW_OFFSET: {:#x}", SHADOW_OFFSET);
+            println!("SHADOW_SIZE:   {:#x}", SHADOW_SIZE);
 
-        println!("app addr:      {:#x}", addr as usize);
-        println!("shadow addr:   {:#x}", shadow_addr as usize);
-        println!("SHADOW_OFFSET: {:#x}", SHADOW_OFFSET);
-        println!("SHADOW_SIZE:   {:#x}", SHADOW_SIZE);
+            assert!(shadow_addr as usize >= SHADOW_OFFSET);
+            assert!((shadow_addr as usize) < SHADOW_OFFSET + SHADOW_SIZE);
 
-        assert!(shadow_addr as usize >= SHADOW_OFFSET);
-        assert!((shadow_addr as usize) < SHADOW_OFFSET + SHADOW_SIZE);
+            // poison first
+            shadow.poison(addr, 6, 0xf1);
+            let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
+            assert_eq!(value, 0xf1, "Value != 0xf1");
 
-        // poison first
-        shadow.poison(addr, 6, 0xf1);
-        let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
-        assert_eq!(value, 0xf1, "Value != 0xf1");
+            shadow.unpoison(addr, 6);
+            let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
+            assert_eq!(value, 0x06, "Value != 0x06");
 
-        shadow.unpoison(addr, 6);
-        let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
-        assert_eq!(value, 0x06, "Value != 0x06");
-
-        let result = shadow.check(addr as usize, 6);
-        assert_eq!(result, None, "Result != None");
+            let result = shadow.check(addr as usize, 6);
+            assert_eq!(result, None, "Result != None");
+        }
     }
 
     #[test]
     fn test_full_partial() {
-        let mut shadow = Shadow::new();
-        shadow.init();
+        if let Ok(mut shadow) = Shadow::global().lock() {
+            let addr: *mut u8 = 0x602000000010 as *mut u8;
+            let shadow_addr = shadow.shadow_addr_of(addr as usize);
 
-        let addr: *mut u8 = 0x602000000010 as *mut u8;
-        let shadow_addr = shadow.shadow_addr_of(addr as usize);
+            println!("app addr:      {:#x}", addr as usize);
+            println!("shadow addr:   {:#x}", shadow_addr as usize);
+            println!("SHADOW_OFFSET: {:#x}", SHADOW_OFFSET);
+            println!("SHADOW_SIZE:   {:#x}", SHADOW_SIZE);
 
-        println!("app addr:      {:#x}", addr as usize);
-        println!("shadow addr:   {:#x}", shadow_addr as usize);
-        println!("SHADOW_OFFSET: {:#x}", SHADOW_OFFSET);
-        println!("SHADOW_SIZE:   {:#x}", SHADOW_SIZE);
+            assert!(shadow_addr as usize >= SHADOW_OFFSET);
+            assert!((shadow_addr as usize) < SHADOW_OFFSET + SHADOW_SIZE);
 
-        assert!(shadow_addr as usize >= SHADOW_OFFSET);
-        assert!((shadow_addr as usize) < SHADOW_OFFSET + SHADOW_SIZE);
+            // poison first
+            shadow.poison(addr, 18, 0xf1);
+            let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
+            assert_eq!(value, 0xf1, "Value != 0xf1");
 
-        // poison first
-        shadow.poison(addr, 18, 0xf1);
-        let value = unsafe { std::ptr::read(shadow_addr as *const u8) };
-        assert_eq!(value, 0xf1, "Value != 0xf1");
+            shadow.unpoison(addr, 18);
+            let shadow_addr_1 = shadow.shadow_addr_of(addr as usize + 16);
+            let value = unsafe { std::ptr::read(shadow_addr_1 as *const u8) };
+            assert_eq!(value, 0x02, "Value != 0x01");
 
-        shadow.unpoison(addr, 18);
-        let shadow_addr_1 = shadow.shadow_addr_of(addr as usize + 16);
-        let value = unsafe { std::ptr::read(shadow_addr_1 as *const u8) };
-        assert_eq!(value, 0x02, "Value != 0x01");
-
-        let result = shadow.check(addr as usize, 19);
-        assert_eq!(result, Some(0xf1), "Result != None");
+            let result = shadow.check(addr as usize, 19);
+            assert_eq!(result, Some(0xf1), "Result != None");
+        }
     }
 }
