@@ -1,3 +1,7 @@
+pub mod instrument;
+
+use crate::instrument::Instrument;
+
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
 }
