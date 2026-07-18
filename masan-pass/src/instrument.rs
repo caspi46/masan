@@ -229,15 +229,17 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
             .into_pointer_value()
             .replace_all_uses_with(inst_ptr);
 
-        let alloca_inst = alloca_ptr.as_instruction_value().unwrap();
-        let next_inst = alloca_inst.get_next_instruction().unwrap();
-        self.builder.position_before(&next_inst);
+        // let alloca_inst = alloca_ptr.as_instruction_value().unwrap();
+        // let next_inst = alloca_inst.get_next_instruction().unwrap();
+        // self.builder.position_before(&next_inst);
 
         let rz_size_val = self.context.i64_type().const_int(rz_size as u64, false);
 
         self.call_poison(left_rz_ptr, rz_size_val, 0xf1);
         self.call_unpoison(inst_ptr, size);
         self.call_poison(right_rz_ptr, rz_size_val, 0xf1);
+
+        inst.erase_from_basic_block();
     }
 
     fn analyze_store(&mut self, inst: InstructionValue<'ctx>) {
@@ -354,7 +356,7 @@ mod tests {
 
         // 7. verify IR was modified
         // check that __miniasan_poison calls exist in the module
-        let poison_fn = module.get_function("poison_memory");
+        let poison_fn = module.get_function("__poison_memory");
         assert!(
             poison_fn.is_some(),
             "poison_memory function should be declared"
