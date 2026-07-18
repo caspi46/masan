@@ -26,6 +26,7 @@ pub struct Instrument<'a, 'ctx> {
     lifetime_end_id: u32,
     poison_fn: Option<FunctionValue<'ctx>>,
     unpoison_fn: Option<FunctionValue<'ctx>>,
+    check_fn: Option<FunctionValue<'ctx>>,
 }
 
 impl<'a, 'ctx> Instrument<'a, 'ctx> {
@@ -42,6 +43,7 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
             lifetime_end_id,
             poison_fn: None,
             unpoison_fn: None,
+            check_fn: None,
         }
     }
 
@@ -64,7 +66,7 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
     }
 
     fn get_or_declare_unpoison_fn(&mut self) -> FunctionValue<'ctx> {
-        if let Some(f) = self.poison_fn {
+        if let Some(f) = self.unpoison_fn {
             return f;
         }
         let void_type = self.context.void_type();
@@ -82,7 +84,7 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
     }
 
     fn get_or_declare_check_fn(&mut self) -> FunctionValue<'ctx> {
-        if let Some(f) = self.poison_fn {
+        if let Some(f) = self.check_fn {
             return f;
         }
         let void_type = self.context.void_type();
@@ -228,10 +230,6 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
         inst.as_any_value_enum()
             .into_pointer_value()
             .replace_all_uses_with(inst_ptr);
-
-        // let alloca_inst = alloca_ptr.as_instruction_value().unwrap();
-        // let next_inst = alloca_inst.get_next_instruction().unwrap();
-        // self.builder.position_before(&next_inst);
 
         let rz_size_val = self.context.i64_type().const_int(rz_size as u64, false);
 
