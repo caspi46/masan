@@ -1,6 +1,11 @@
 # masan
 build my (own) ASan (Address Sanitizer)
 
+## Current stage:
+- finished the unit testing for shadow memory functions and llvm-pass (analyze alloca, call, store, and load) 
+- ToDo: testing with the actual source code (.c/.cpp) 
+
+
 ## Goal of this project 
 - Better understanding of: 
     - memory vulnerability 
@@ -60,7 +65,7 @@ int* p;
 p[2] = 3; // use-after-scope - arr is gone, but writing to its old location!
 ```
 
-# Shadow Memory 
+## Shadow Memory 
 - TODO: 
     - How many full 8-byte words are there 
     - Is there a remainder that needs a partial shadow byte? 
@@ -68,12 +73,19 @@ p[2] = 3; // use-after-scope - arr is gone, but writing to its old location!
 - Shadow memory format is 8 app_addr : 1 shadow byte: 
     - the variable can have multiple shadow bytes (ex: char buf[16]; // 2 shadows)
     - the partial shadow byte exists due to variable separation (ex: char buf1[4]; char buf2[5]; // there are three shadow bytes 1 for buf1 2 for buf2)
-# Poisoning & Unpoisoning
+## Poisoning & Unpoisoning
 - Poisoning: Writing a sentinel byte value into the shadow map for a given region 
 - Unpoisoning: Writing zero 
-# Redzone
+## Redzone
 - Poisoned memory placed around a valid buffer 
 - handled by llvm pass 
 - timing of the redzone: 
     - when variable is created => create redzone! 
     - when variable's lifetime is done => drop redzone!
+
+## Dependencies for this project: 
+- inkwell
+- libc
+
+## Resource: 
+- [ASan Paper](https://www.usenix.org/system/files/conference/atc12/atc12-final39.pdf)
