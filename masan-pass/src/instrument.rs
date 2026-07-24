@@ -33,7 +33,7 @@ pub struct Instrument<'a, 'ctx> {
 }
 
 impl<'a, 'ctx> Instrument<'a, 'ctx> {
-    fn new(module: &'a Module<'ctx>) -> Self {
+    pub fn new(module: &'a Module<'ctx>) -> Self {
         let context = module.get_context();
         let lifetime_end_id = unsafe {
             let name = "llvm.lifetime.end.p0";
@@ -51,7 +51,7 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
         }
     }
 
-    fn run(&mut self) {
+    pub fn run(&mut self) {
         for func in self.module.get_functions() {
             for bb in func.get_basic_blocks() {
                 for inst in bb.get_instructions() {
