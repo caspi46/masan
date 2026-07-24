@@ -4,9 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib"]
+name = "masan_pass"
+path = "src/lib.rs"
+
+[[bin]]
+name = "masan_pass"
+path = "src/main.rs"
 
 [dependencies]
-inkwell = { version = "0.9.0", features = ["llvm22-1"]}
-llvm-sys = "221"
-libc     = "0.2"
+inkwell = { version = "0.9.0", features = ["llvm22-1"] }
+llvm-sys = "221.0.1"
+libc = "0.2"
