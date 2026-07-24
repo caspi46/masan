@@ -1,91 +1,122 @@
-# masan
-build my (own) ASan (Address Sanitizer)
+# mASan
 
-## Current stage:
-- finished the unit testing for shadow memory functions and llvm-pass (analyze alloca, call, store, and load) 
-- ToDo: testing with the actual source code (.c/.cpp) 
+A custom memory sanitizer built in Rust that detects **stack buffer overflow** 
+and **use-after-scope** vulnerabilities in C/C++ programs via LLVM IR 
+instrumentation and shadow memory.
+
+---
+
+## Features
+
+- Detects stack buffer overflow — spatial memory error
+- Detects use-after-scope — temporal memory error  
+- Error reporting with stack traces on detection
+- Zero source code changes required — works at the IR level
+
+---
+
+## Architecture
+
+mASan has two components that work together:
+
+masan-pass (compile time) masan-rt (run time)
+───────────────────────── ───────────────────
+LLVM IR pass plugin Shadow memory engine
+Instruments alloca poison / unpoison
+Instruments lifetime.end check
+Instruments load / store report + abort
 
 
-## Goal of this project 
-- Better understanding of: 
-    - memory vulnerability 
-    - LLVM IRs 
-    - Modern C++ 
+**Pipeline:**
 
-## Features I'm going to implement 
-- detects memory vulnerabilities: 
-    - stack buffer overflow 
-    - use-after-scope 
-- error report for above vulnerabilities 
+foo.c
+↓ clang -O1 -S -emit-llvm
+foo.ll (unmodified IR)
+↓ opt -load-pass-plugin=libmasan_pass.dylib -passes=masan
+instrumented.ll (shadow checks inserted)
+↓ clang instrumented.ll libmasan_rt.a -o foo
+./foo (instrumented binary)
+↓ runs — on bad access:
+__miniasan_check() fires → report error → abort
 
-## architecture design 
-- language: Rust (with llvm-plugin-rs) 
-- architecture format: 
-    1. target C/C++ program - Input (ex: foo.c)
-    
-        - `clang -S -emit-llvm -00 -g` 
-    2. LLVM IR, unmodified (ex: foo.ll)
-        - `opt -load-pass-plugin=libmyasan_pass.so -passes=myasan`
-    3. Shadow checks inserted (ex: instrumented.ll)
-        - `clang -c instrumented.ll -o foo.o`
-        - `clang foo.o libmyasan_rt.a -o foo`
-    4. Instrumented binary (ex: ./foo)
-        - run 
-    5. triggers__myasan_check() on bad access 
-        - -> reports error
-        - -> aborts
 
-## Memory Vulnerability 
-### Stack Buffer Overflow 
-- When a program writes more data into a buffer than it was allocated to hold
-     => The excess data to spill over adjacent memory on the stack 
+---
 
-### Use-After-Scope 
-- A program accesses a variable after it has gone out of scope 
-- The memory that variable lived in has already been released or repurposed, but a pointer to it still exists and gets used. 
-```c++
-// example #1
-int* get_value() {
-    int x = 42; // x lives on the stack 
-    return &x;  //returning a pointer to a local variable 
-}               // x goes out of scope here - memory is "freed" 
+## Memory Vulnerabilities
 
-int main() {
-    int* p = get_value(); 
-    printf("%d\n", *p); // use-after-scope! reading dead memory 
-}
+### Stack Buffer Overflow
 
-// example #2 
-int* p; 
-{
-    int arr[3] = {0, 1, 2, 3}; 
-    p = arr;
-}
+A program writes or reads past the end of a stack-allocated buffer, 
+corrupting adjacent memory.
 
-p[2] = 3; // use-after-scope - arr is gone, but writing to its old location!
+```c
+char buf[8];
+buf[9] = 'A';  // one byte past the end — corrupts adjacent memory
 ```
 
-## Shadow Memory 
-- TODO: 
-    - How many full 8-byte words are there 
-    - Is there a remainder that needs a partial shadow byte? 
-    - Write the aprpropriate value to each shadow byte 
-- Shadow memory format is 8 app_addr : 1 shadow byte: 
-    - the variable can have multiple shadow bytes (ex: char buf[16]; // 2 shadows)
-    - the partial shadow byte exists due to variable separation (ex: char buf1[4]; char buf2[5]; // there are three shadow bytes 1 for buf1 2 for buf2)
-## Poisoning & Unpoisoning
-- Poisoning: Writing a sentinel byte value into the shadow map for a given region 
-- Unpoisoning: Writing zero 
-## Redzone
-- Poisoned memory placed around a valid buffer 
-- handled by llvm pass 
-- timing of the redzone: 
-    - when variable is created => create redzone! 
-    - when variable's lifetime is done => drop redzone!
+mASan detects this by placing poisoned **redzones** around every stack 
+variable. Any access into a redzone triggers an immediate error report.
 
-## Dependencies for this project: 
-- inkwell
-- libc
+---
 
-## Resource: 
-- [ASan Paper](https://www.usenix.org/system/files/conference/atc12/atc12-final39.pdf)
+### Use-After-Scope
+
+A program accesses a variable through a pointer after the variable's 
+scope has ended. The stack memory has been released but the pointer 
+still holds the old address.
+
+```c
+// example 1 — returning pointer to local variable
+int* get_value() {
+    int x = 42;
+    return &x;      // x goes out of scope when function returns
+}
+
+int main() {
+    int* p = get_value();
+    printf("%d\n", *p);  // use-after-scope — x is gone
+}
+
+// example 2 — pointer outlives its scope
+int* p;
+{
+    int arr[3] = {0, 1, 2};
+    p = arr;
+}                   // arr goes out of scope here
+
+p[2] = 3;           // use-after-scope — arr's memory is no longer valid
+```
+
+mASan detects this by poisoning a variable's shadow bytes (`0xf8`) when 
+its `llvm.lifetime.end` marker is reached. Any subsequent access through 
+a dangling pointer triggers an error report.
+
+---
+
+## Known Limitations
+
+- Stack overflows larger than 32 bytes may not be detected if they land 
+  beyond the redzone in valid memory
+- Heap allocations (`malloc`/`free`) are not yet instrumented
+- Multithreaded programs are not supported
+- Requires `-O1` or higher for use-after-scope detection 
+  (`llvm.lifetime.end` markers only appear with optimization enabled)
+
+---
+
+## Dependencies
+
+| Crate | Purpose |
+|-------|---------|
+| `inkwell` | Safe Rust bindings to LLVM for writing the IR pass |
+| `libc` | `mmap` system call for shadow memory initialization |
+| `llvm-sys` | Raw LLVM C API for intrinsic ID lookup |
+| `backtrace` | Symbolized stack traces in error reports |
+
+---
+
+## References
+
+- [AddressSanitizer: A Fast Address Sanity Checker (USENIX ATC 2012)](https://www.usenix.org/system/files/conference/atc12/atc12-final39.pdf)
+- [LLVM Language Reference — Lifetime Intrinsics](https://llvm.org/docs/LangRef.html#llvm-lifetime-end-intrinsic)
+- [Google Sanitizers Wiki](https://github.com/google/sanitizers/wiki/AddressSanitizerAlgorithm)
