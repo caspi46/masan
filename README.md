@@ -15,30 +15,28 @@ instrumentation and shadow memory.
 
 ---
 
-## Architecture
+**Components:**
 
-mASan has two components that work together:
-
-masan-pass (compile time) masan-rt (run time)
-───────────────────────── ───────────────────
-LLVM IR pass plugin Shadow memory engine
-Instruments alloca poison / unpoison
-Instruments lifetime.end check
-Instruments load / store report + abort
-
+| masan-pass (compile time) | masan-rt (run time) |
+|---|---|
+| LLVM IR pass plugin | Shadow memory engine |
+| Instruments `alloca` | `poison` / `unpoison` |
+| Instruments `llvm.lifetime.end` | `check` |
+| Instruments `load` / `store` | `report` + abort |
 
 **Pipeline:**
 
+```
 foo.c
-↓ clang -O1 -S -emit-llvm
-foo.ll (unmodified IR)
-↓ opt -load-pass-plugin=libmasan_pass.dylib -passes=masan
-instrumented.ll (shadow checks inserted)
-↓ clang instrumented.ll libmasan_rt.a -o foo
-./foo (instrumented binary)
-↓ runs — on bad access:
+  ↓  clang -O1 -S -emit-llvm
+foo.ll                          (unmodified IR)
+  ↓  opt -load-pass-plugin=libmasan_pass.dylib -passes=masan
+instrumented.ll                 (shadow checks inserted)
+  ↓  clang instrumented.ll libmasan_rt.a -o foo
+./foo                           (instrumented binary)
+  ↓  on bad access:
 __miniasan_check() fires → report error → abort
-
+```
 
 ---
 
