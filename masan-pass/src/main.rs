@@ -1,6 +1,6 @@
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
-use masan_pass::instrument::Instrument;
+use masan_pass::Instrument;
 use std::env;
 use std::path::Path;
 

@@ -6,6 +6,7 @@ edition = "2021"
 [lib]
 name = "masan_pass"
 path = "src/lib.rs"
+# crate-type = ["cdylib"]
 
 [[bin]]
 name = "masan_pass"
