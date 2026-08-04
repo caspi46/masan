@@ -29,7 +29,9 @@ rel_rt = "./target/release/libmasan_rt.a"
 dbg_rt = "./target/debug/libmasan_rt.a"
 RT = (
     rel_rt
-    if os.path.exists(rel_rt) and os.path.getmtime(rel_rt) > os.path.getmtime(dbg_rt)
+    if os.path.exists(rel_rt)
+    and os.path.exists(dbg_rt)
+    and os.path.getmtime(rel_rt) > os.path.getmtime(dbg_rt)
     else (dbg_rt if os.path.exists(dbg_rt) else rel_rt)
 )
 
@@ -43,13 +45,8 @@ def run_cmd(cmd):
 
     result = subprocess.run(cmd, capture_output=True, text=True)
 
-    # Show tool output so pass-stage debug prints are visible during inspection.
-    if result.stdout:
-        print(result.stdout, end="")
-    if result.stderr:
-        print(result.stderr, end="", file=sys.stderr)
-
     if result.returncode != 0:
+        print(result.stderr)
         sys.exit(1)
 
 
@@ -110,16 +107,16 @@ def inspect_file(c_file):
     print(f"[*] Using pass binary: {PASS}")
 
     # -------------------------------------------------------------------------
-    # Generate LLVM IR with frontend lifetime intrinsics preserved.
-    # -O1 enables lifetime marker emission, and -disable-llvm-passes keeps
-    # the raw frontend IR structure for easier pass debugging.
+    # Generate LLVM IR with lifetime emission flags (-O0 -disable-O0-optnone)
     # -------------------------------------------------------------------------
     clang_cmd = [
         "clang",
         "-S",
         "-emit-llvm",
-        "-O1",
-        "-Xclang", "-disable-llvm-passes",
+        "-O0",
+        "-Xclang",
+        "-disable-O0-optnone",
+        "-fsanitize-address-use-after-scope",
         "-g",
         "-fno-discard-value-names",
         c_file,
@@ -142,10 +139,6 @@ def inspect_file(c_file):
     run_cmd(pass_cmd)
 
     print(f"[+] Generated instrumented IR: {asan_ll}")
-
-    if not os.path.exists(asan_ll):
-        print(f"[-] Error: Expected output file was not created: {asan_ll}")
-        sys.exit(1)
 
     # Inspect result
     print("\nLLVM IR AFTER MASAN PASS")
