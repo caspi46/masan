@@ -29,6 +29,7 @@ pub struct Instrument<'a, 'ctx> {
     poison_fn: Option<FunctionValue<'ctx>>,
     unpoison_fn: Option<FunctionValue<'ctx>>,
     check_fn: Option<FunctionValue<'ctx>>,
+    alloca_to_payload: HashMap<PointerValue<'ctx>, PointerValue<'ctx>>,
     inst_to_size: HashMap<PointerValue<'ctx>, IntValue<'ctx>>,
 }
 
@@ -47,20 +48,76 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
             poison_fn: None,
             unpoison_fn: None,
             check_fn: None,
+            alloca_to_payload: HashMap::new(),
             inst_to_size: HashMap::new(),
         }
     }
 
     pub fn run(&mut self) {
         for func in self.module.get_functions() {
+            eprintln!("MASAN DEBUG: commented passes version");
+            self.inst_to_size.clear();
+            // PASS 0: collect lifetime information before rewriting allocas
+            let mut lifetime_ends = Vec::new();
+
             for bb in func.get_basic_blocks() {
                 for inst in bb.get_instructions() {
-                    self.analyze_inst(inst);
+                    println!("lifetime: {}", inst.print_to_string().to_string());
+                    // if self.is_lifetime_start(inst) {
+                    //     self.record_lifetime_start(inst);
+                    // }
+
+                    if self.is_lifetime_end(inst) {
+                        println!("FOUND lifetime.end: {}", inst.print_to_string().to_string());
+
+                        lifetime_ends.push(inst);
+                    }
                 }
+            }
+
+            // -------------------------------------------------------------
+            // PASS 1: Transform all standard Alloca instructions into padded
+            // redzone structs and replace user pointer usages first.
+            // -------------------------------------------------------------
+            let mut allocas = Vec::new();
+            for bb in func.get_basic_blocks() {
+                for inst in bb.get_instructions() {
+                    if inst.get_opcode() == InstructionOpcode::Alloca {
+                        allocas.push(inst);
+                    }
+                }
+            }
+            for alloca_inst in allocas {
+                self.analyze_alloca(alloca_inst);
+            }
+
+            // -------------------------------------------------------------
+            // PASS 2: Instrument Loads, Stores, Calls, and Returns against
+            // the already updated/replaced payload pointers.
+            // -------------------------------------------------------------
+            for bb in func.get_basic_blocks() {
+                let insts = bb.get_instructions();
+                for inst in insts {
+                    match inst.get_opcode() {
+                        InstructionOpcode::Call => self.analyze_call(inst),
+                        InstructionOpcode::Load => self.analyze_load(inst),
+                        InstructionOpcode::Store => self.analyze_store(inst),
+                        InstructionOpcode::Return => self.analyze_return(inst),
+                        _ => (),
+                    }
+                }
+            }
+
+            // PASS 3: emit lifetime poison after mapping exists
+            for lifetime_end in lifetime_ends {
+                // let lifetime_end_ptr = match lifetime_end.get_operand(1) {
+                //     Some(Operand::Value(v)) if v.is_pointer_value() => v.into_pointer_value(),
+                //     _ => continue,
+                // };
+                self.handle_lifetime_end(lifetime_end);
             }
         }
     }
-
     // check the instruction's type: function call, alloc, and free
     fn analyze_inst(&mut self, inst: InstructionValue<'ctx>) {
         match inst.get_opcode() {
@@ -80,12 +137,17 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
                 // store (write)
                 self.analyze_store(inst);
             }
+            InstructionOpcode::Return => {
+                // return
+                self.analyze_return(inst);
+            }
 
             _ => (),
         }
     }
 
     fn analyze_call(&mut self, inst: InstructionValue<'ctx>) {
+        println!("CALL: {}", inst.print_to_string().to_string());
         let call_site = match CallSiteValue::try_from(inst) {
             Ok(site) => site,
             Err(_) => return,
@@ -102,9 +164,10 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
             "malloc" => (), // For future design
             "free" => (),   // For future design
             _ => {
-                if self.is_lifetime_end(inst) {
-                    self.handle_lifetime_end(inst);
-                }
+                // if self.is_lifetime_end(inst) {
+                //     println!("LIFETIME DETECTED: {}", inst.print_to_string().to_string());
+                //     self.handle_lifetime_end(inst);
+                // }
             }
         }
     }
@@ -124,6 +187,7 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
             .expect("alloca should have a name")
             .to_str()
             .unwrap_or("var");
+        let original_ptr = inst.as_any_value_enum().into_pointer_value();
 
         self.builder.position_before(&inst);
 
@@ -137,7 +201,7 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
 
         let struct_type = self.context.struct_type(
             &[left_rz_type.into(), inst_type.into(), right_rz_type.into()],
-            false,
+            true,
         );
 
         let alloca_ptr = self
@@ -159,9 +223,7 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
             .build_struct_gep(struct_type, alloca_ptr, 2, "right_rz_ptr")
             .unwrap();
 
-        inst.as_any_value_enum()
-            .into_pointer_value()
-            .replace_all_uses_with(inst_ptr);
+        original_ptr.replace_all_uses_with(inst_ptr);
 
         let rz_size_val = self.context.i64_type().const_int(rz_size as u64, false);
 
@@ -169,8 +231,13 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
         self.call_unpoison(inst_ptr, size);
         self.call_poison(right_rz_ptr, rz_size_val, 0xf1);
 
+        self.inst_to_size.insert(inst_ptr, size);
+
+        self.alloca_to_payload.insert(original_ptr, inst_ptr);
+        self.alloca_to_payload.insert(alloca_ptr, inst_ptr);
+        self.alloca_to_payload.insert(inst_ptr, inst_ptr);
+
         inst.erase_from_basic_block();
-        self.inst_to_size.insert(inst_ptr, size); // to handle the lifetime.end
     }
 
     fn analyze_store(&mut self, inst: InstructionValue<'ctx>) {
@@ -193,6 +260,20 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
 
         self.builder.position_before(&inst);
         self.call_check(dest_ptr, access_size_val);
+    }
+
+    fn analyze_return(&mut self, inst: InstructionValue<'ctx>) {
+        let allocas: Vec<(PointerValue<'ctx>, IntValue<'ctx>)> = self
+            .inst_to_size
+            .iter()
+            .map(|(&ptr, &size)| (ptr, size))
+            .collect();
+
+        self.builder.position_before(&inst);
+
+        for (ptr, size) in allocas {
+            self.call_poison(ptr, size, 0xf3); // 0xF3 = Stack Frame Returned
+        }
     }
 
     fn get_type_size_in_bytes(&mut self, ty: BasicTypeEnum<'ctx>) -> u64 {
@@ -221,22 +302,23 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
 
     fn analyze_load(&mut self, inst: InstructionValue<'ctx>) {
         let pointer = match inst.get_operand(0) {
+            Some(Operand::Value(v)) if v.is_pointer_value() => v.into_pointer_value(),
+            _ => return,
+        };
+        let loaded_val = match inst.get_operand(0) {
             Some(Operand::Value(v)) => v,
             _ => return,
         };
-        let pointer_pv = if pointer.is_pointer_value() {
-            pointer.into_pointer_value()
-        } else {
-            return;
-        };
 
-        let access_size_bytes = self.get_type_size_in_bytes(pointer.get_type());
+        let access_size_bytes = self.get_type_size_in_bytes(loaded_val.get_type());
+
         let access_size_val = self
             .context
             .i64_type()
             .const_int(std::cmp::max(1, access_size_bytes), false);
+
         self.builder.position_before(&inst);
-        self.call_check(pointer_pv, access_size_val);
+        self.call_check(pointer, access_size_val);
     }
 
     fn get_inst_size(&mut self, inst: InstructionValue<'ctx>) -> Option<IntValue<'ctx>> {
@@ -343,33 +425,116 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
     }
 
     fn is_lifetime_end(&self, inst: InstructionValue<'ctx>) -> bool {
-        if let Ok(call_site) = CallSiteValue::try_from(inst) {
-            if let Some(called_fn) = call_site.get_called_fn_value() {
-                let id = called_fn.get_intrinsic_id();
-                return id != 0 && id == self.lifetime_end_id;
-            }
-        }
-        false
+        let call_site = match CallSiteValue::try_from(inst) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        let called = match call_site.get_called_fn_value() {
+            Some(f) => f,
+            None => return false,
+        };
+
+        let name = called.get_name();
+
+        name.to_str()
+            .map(|n| n.starts_with("llvm.lifetime.end"))
+            .unwrap_or(false)
     }
 
-    fn handle_lifetime_end(&mut self, inst: InstructionValue<'ctx>) {
-        if let Some(ended_ptr) = inst.get_operand(1) {
-            let basic_val = match ended_ptr {
-                Operand::Value(val) => val,
-                Operand::Block(_) => return,
-            };
-
-            if !basic_val.is_pointer_value() {
-                return;
-            }
-
-            let pointer_val = basic_val.into_pointer_value();
-
-            if let Some(info) = self.inst_to_size.get(&pointer_val) {
-                self.builder.position_before(&inst);
-                self.call_poison(pointer_val, *info, 0xf8);
+    fn get_lifetime_ptr(&self, inst: InstructionValue<'ctx>) -> Option<PointerValue<'ctx>> {
+        for i in 0..inst.get_num_operands() {
+            if let Some(Operand::Value(v)) = inst.get_operand(i) {
+                if v.is_pointer_value() {
+                    return Some(v.into_pointer_value());
+                }
             }
         }
+
+        None
+    }
+
+    // fn handle_lifetime_end_ptr(&mut self, ptr: PointerValue<'ctx>) {
+    //     let base_ptr = self.get_base_ptr(ptr);
+
+    //     let payload_ptr = if let Some(&payload) = self.alloca_to_payload.get(&base_ptr) {
+    //         payload
+    //     } else if let Some(&payload) = self.alloca_to_payload.get(&ptr) {
+    //         payload
+    //     } else {
+    //         return;
+    //     };
+
+    //     if let Some(&size) = self.inst_to_size.get(&payload_ptr) {
+    //         self.builder.position_before(&inst);
+    //         self.call_poison(payload_ptr, size, 0xf8);
+    //     }
+    // }
+
+    fn handle_lifetime_end(&mut self, inst: InstructionValue<'ctx>) {
+        // 1. Extract pointer operand from llvm.lifetime.end
+        // LLVM versions differ:
+        //   old: llvm.lifetime.end(i64 size, ptr %var)
+        //   new: llvm.lifetime.end(ptr %var)
+
+        let ptr = match self.get_lifetime_ptr(inst) {
+            Some(p) => p,
+            None => return,
+        };
+        // 2. Resolve original allocation pointer through GEP/bitcast chain
+        let base_ptr = self.get_base_ptr(ptr);
+
+        // 3. Resolve payload pointer
+        let payload_ptr = match self.alloca_to_payload.get(&base_ptr) {
+            Some(&payload) => payload,
+
+            None => match self.alloca_to_payload.get(&ptr) {
+                Some(&payload) => payload,
+
+                None if self.inst_to_size.contains_key(&ptr) => ptr,
+
+                None if self.inst_to_size.contains_key(&base_ptr) => base_ptr,
+
+                None => return,
+            },
+        };
+
+        // 4. Insert poison BEFORE lifetime.end
+        if let Some(&size) = self.inst_to_size.get(&payload_ptr) {
+            self.builder.position_before(&inst);
+
+            // 0xf8 = stack-use-after-scope
+            self.call_poison(payload_ptr, size, 0xf8);
+
+            // Optional:
+            // Remove LLVM lifetime marker because MASAN now manages the lifetime.
+            // inst.erase_from_basic_block();
+        }
+    }
+    fn get_base_ptr(&self, mut ptr: PointerValue<'ctx>) -> PointerValue<'ctx> {
+        // Limit loop depth to prevent infinite loops on recursive GEPs
+        for _ in 0..16 {
+            let val = ptr.as_instruction_value();
+
+            if let Some(inst) = val {
+                match inst.get_opcode() {
+                    InstructionOpcode::GetElementPtr
+                    | InstructionOpcode::BitCast
+                    | InstructionOpcode::AddrSpaceCast => {
+                        if let Some(Operand::Value(base)) = inst.get_operand(0) {
+                            if base.is_pointer_value() {
+                                ptr = base.into_pointer_value();
+                                continue;
+                            }
+                        }
+                    }
+                    _ => break,
+                }
+            } else {
+                break;
+            }
+        }
+        ptr
     }
 }
 
