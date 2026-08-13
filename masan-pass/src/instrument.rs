@@ -125,28 +125,6 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
             }
         }
     }
-    // check the instruction's type: function call, alloc, and free
-    fn analyze_inst(&mut self, inst: InstructionValue<'ctx>) {
-        match inst.get_opcode() {
-            InstructionOpcode::Call => {
-                // check malloc and free
-                self.analyze_call(inst);
-            }
-            InstructionOpcode::Alloca => {
-                // stack allocation
-                self.analyze_alloca(inst);
-            }
-            InstructionOpcode::Load => {
-                // load (read)
-                self.analyze_load(inst);
-            }
-            InstructionOpcode::Store => {
-                // store (write)
-                self.analyze_store(inst);
-            }
-            _ => (),
-        }
-    }
 
     fn analyze_call(&mut self, inst: InstructionValue<'ctx>) {
         println!("CALL: {}", inst.print_to_string().to_string());
@@ -165,12 +143,7 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
         match fn_name.as_ref() {
             "malloc" => (), // For future design
             "free" => (),   // For future design
-            _ => {
-                // if self.is_lifetime_end(inst) {
-                //     println!("LIFETIME DETECTED: {}", inst.print_to_string().to_string());
-                //     self.handle_lifetime_end(inst);
-                // }
-            }
+            _ => (),
         }
     }
 
