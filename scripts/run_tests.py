@@ -14,7 +14,14 @@ PASS = (
 RT = (
     "./target/release/libmasan_rt.a"
     if os.path.exists("./target/release/libmasan_rt.a")
-    else "./target/debug/libmasan_rt.a"
+    and os.path.exists("./target/debug/libmasan_rt.a")
+    and os.path.getmtime("./target/release/libmasan_rt.a")
+    > os.path.getmtime("./target/debug/libmasan_rt.a")
+    else (
+        "./target/debug/libmasan_rt.a"
+        if os.path.exists("./target/debug/libmasan_rt.a")
+        else "./target/release/libmasan_rt.a"
+    )
 )
 
 TMP_IR_RAW = "/tmp/masan_raw.ll"
@@ -34,6 +41,13 @@ def get_link_flags():
         return ["-Wl,--whole-archive", RT, "-Wl,--no-whole-archive"]
 
 
+def get_clang(file: str):
+    ext = os.path.splitext(file)[1].lower()
+    if ext in {".cpp", ".cc", ".cxx"}:
+        return "clang++"
+    return "clang"
+
+
 def run_test(file: str, should_trigger: bool):
     global pass_count, fail_count
 
@@ -44,15 +58,16 @@ def run_test(file: str, should_trigger: bool):
         print(f"⚠️  SKIP: {file} (file not found)")
         return
 
+    clang = get_clang(file)
+
     # 1. Compile C code to raw LLVM IR
     clang_ir_cmd = [
-        "clang",
+        clang,
         "-S",
         "-emit-llvm",
-        "-O0",
+        "-O1",
         "-Xclang",
-        "-disable-O0-optnone",
-        "-fsanitize-address-use-after-scope",
+        "-disable-llvm-passes",
         "-g",
         "-fno-discard-value-names",
         file,
@@ -77,7 +92,7 @@ def run_test(file: str, should_trigger: bool):
 
     # 3. Link instrumented IR with runtime library
     link_cmd = (
-        ["clang", TMP_IR_INST]
+        [clang, TMP_IR_INST]
         + get_link_flags()
         + ["-lpthread", "-ldl", "-o", TMP]
     )
@@ -134,10 +149,14 @@ def main():
     run_test("tests/use_after_scope/basic.c", should_trigger=True)
     run_test("tests/use_after_scope/nested.c", should_trigger=True)
     run_test("tests/use_after_scope/loop.c", should_trigger=True)
+    run_test("tests/use_after_scope/basic.cpp", should_trigger=True)
+    run_test("tests/use_after_scope/nested.cpp", should_trigger=True)
 
     print("\n=== Valid Access Tests ===")
     run_test("tests/valid/basic.c", should_trigger=False)
     run_test("tests/valid/partial.c", should_trigger=False)
+    run_test("tests/valid/basic.cpp", should_trigger=False)
+    run_test("tests/valid/partial.cpp", should_trigger=False)
 
     print("\n================================")
     print(f"Results: {pass_count} passed, {fail_count} failed")

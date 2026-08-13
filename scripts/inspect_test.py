@@ -27,11 +27,15 @@ else:
 
 rel_rt = "./target/release/libmasan_rt.a"
 dbg_rt = "./target/debug/libmasan_rt.a"
-RT = (
-    rel_rt
-    if os.path.exists(rel_rt) and os.path.getmtime(rel_rt) > os.path.getmtime(dbg_rt)
-    else (dbg_rt if os.path.exists(dbg_rt) else rel_rt)
-)
+if os.path.exists(rel_rt) and os.path.exists(dbg_rt):
+    RT = rel_rt if os.path.getmtime(rel_rt) > os.path.getmtime(dbg_rt) else dbg_rt
+elif os.path.exists(rel_rt):
+    RT = rel_rt
+elif os.path.exists(dbg_rt):
+    RT = dbg_rt
+else:
+    print("[-] Error: No libmasan_rt.a found. Run 'cargo build' first.")
+    sys.exit(1)
 
 OUT_DIR = "debug_ir"
 
