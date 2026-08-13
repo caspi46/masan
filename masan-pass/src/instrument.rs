@@ -116,10 +116,6 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
 
             // PASS 3: emit lifetime poison after mapping exists
             for lifetime_end in lifetime_ends {
-                // let lifetime_end_ptr = match lifetime_end.get_operand(1) {
-                //     Some(Operand::Value(v)) if v.is_pointer_value() => v.into_pointer_value(),
-                //     _ => continue,
-                // };
                 self.handle_lifetime_end(lifetime_end);
                 lifetime_end.erase_from_basic_block();
             }
@@ -148,10 +144,6 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
                 // store (write)
                 self.analyze_store(inst);
             }
-            // InstructionOpcode::Return => {
-            //     // return
-            //     self.analyze_return(inst);
-            // }
             _ => (),
         }
     }
@@ -242,9 +234,6 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
         self.call_poison(right_rz_ptr, rz_size_val, 0xf1);
 
         self.inst_to_size.insert(inst_ptr, size);
-
-        self.alloca_to_payload.insert(original_ptr, inst_ptr);
-        self.alloca_to_payload.insert(alloca_ptr, inst_ptr);
         self.alloca_to_payload.insert(inst_ptr, inst_ptr);
 
         inst.erase_from_basic_block();
@@ -481,23 +470,6 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
 
         None
     }
-
-    // fn handle_lifetime_end_ptr(&mut self, ptr: PointerValue<'ctx>) {
-    //     let base_ptr = self.get_base_ptr(ptr);
-
-    //     let payload_ptr = if let Some(&payload) = self.alloca_to_payload.get(&base_ptr) {
-    //         payload
-    //     } else if let Some(&payload) = self.alloca_to_payload.get(&ptr) {
-    //         payload
-    //     } else {
-    //         return;
-    //     };
-
-    //     if let Some(&size) = self.inst_to_size.get(&payload_ptr) {
-    //         self.builder.position_before(&inst);
-    //         self.call_poison(payload_ptr, size, 0xf8);
-    //     }
-    // }
 
     fn handle_lifetime_end(&mut self, inst: InstructionValue<'ctx>) {
         // 1. Extract pointer operand from llvm.lifetime.end
