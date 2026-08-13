@@ -14,7 +14,14 @@ PASS = (
 RT = (
     "./target/release/libmasan_rt.a"
     if os.path.exists("./target/release/libmasan_rt.a")
-    else "./target/debug/libmasan_rt.a"
+    and os.path.exists("./target/debug/libmasan_rt.a")
+    and os.path.getmtime("./target/release/libmasan_rt.a")
+    > os.path.getmtime("./target/debug/libmasan_rt.a")
+    else (
+        "./target/debug/libmasan_rt.a"
+        if os.path.exists("./target/debug/libmasan_rt.a")
+        else "./target/release/libmasan_rt.a"
+    )
 )
 
 TMP_IR_RAW = "/tmp/masan_raw.ll"
@@ -49,10 +56,9 @@ def run_test(file: str, should_trigger: bool):
         "clang",
         "-S",
         "-emit-llvm",
-        "-O0",
+        "-O1",
         "-Xclang",
-        "-disable-O0-optnone",
-        "-fsanitize-address-use-after-scope",
+        "-disable-llvm-passes",
         "-g",
         "-fno-discard-value-names",
         file,
