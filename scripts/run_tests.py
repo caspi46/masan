@@ -158,6 +158,11 @@ def main():
     run_test("tests/valid/basic.cpp", should_trigger=False)
     run_test("tests/valid/partial.cpp", should_trigger=False)
 
+    print("\n=== Heap Tests ===")
+    run_test("tests/double_free/double_free.c", should_trigger=True) 
+    run_test("tests/heap_overflow/heap_overflow.c", should_trigger=True) 
+    run_test("tests/use_after_free/use_after_free.c", should_trigger=True)
+
     print("\n================================")
     print(f"Results: {pass_count} passed, {fail_count} failed")
     print("================================")
