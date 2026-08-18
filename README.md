@@ -8,8 +8,8 @@ instrumentation and shadow memory.
 
 ## Features
 
-- Detects stack buffer overflow — spatial memory error
-- Detects use-after-scope — temporal memory error  
+- Detects stack/heap buffer overflow — spatial memory error
+- Detects use-after-scope/use-after-free — temporal memory error  
 - Error reporting with stack traces on detection
 - Zero source code changes required — works at the IR level
 
@@ -35,7 +35,7 @@ instrumented.ll                 (shadow checks inserted)
   ↓  clang instrumented.ll libmasan_rt.a -o foo
 ./foo                           (instrumented binary)
   ↓  on bad access:
-__miniasan_check() fires → report error → abort
+__masan_check() fires → report error → abort
 ```
 
 ---
@@ -91,11 +91,77 @@ a dangling pointer triggers an error report.
 
 ---
 
+### Heap Buffer Overflow
+
+A program reads or writes past the boundary of a dynamically allocated heap buffer, corrupting adjacent heap chunks or allocator metadata.
+
+```c
+#include <stdlib.h>
+#include <string.h>
+
+int main() {
+    char *buf = (char *)malloc(4);
+    if (!buf) return 1;
+
+    // Copies 9 bytes (8 chars + '\0') into a 4-byte buffer
+    strcpy(buf, "OVERFLOW"); 
+
+    free(buf);
+    return 0;
+}
+```
+
+- Detection: `malloc` wrapper places poisoned heap redzones (`0xFB`) immediately before and after the requested payload. Any load or store landing in these redzones triggers an immediate bounds-violation abort.
+
+---
+
+### Use-After-Free (UAF)
+A program accesses dynamically allocated memory after it has already been released to the system.
+
+Example: 
+```c
+#include <stdlib.h>
+
+int main() {
+    int *arr = (int *)malloc(sizeof(int) * 4);
+    if (!arr) return 1;
+
+    free(arr);
+
+    // Read/write to deallocated heap chunk
+    int val = arr[0]; 
+
+    return val;
+}
+```
+- Detection: `free` immediately overwrites the chunk's shadow bytes with freed markers (`0xFD`) and moves the chunk into a quarantine ring buffer to delay address reuse. Any subsequent dereference triggers an invalid access fault.
+---
+
+### Double Free
+A program attempts to call free() on an address that has already been deallocated.
+
+Example: 
+```c
+#include <stdlib.h>
+
+int main() {
+    void *ptr = malloc(32);
+    if (!ptr) return 1;
+
+    free(ptr);
+    free(ptr); // Double free: ptr has already been released
+
+    return 0;
+}
+```
+- Detection: The `free` hook inspects the target address's shadow memory before releasing it. If the address is already marked as poisoned or quarantined (`0xFD`), the runtime aborts immediately with a double-free panic and provides both allocation/deallocation stack traces.
+
+---
+
 ## Known Limitations
 
 - Stack overflows larger than 32 bytes may not be detected if they land 
   beyond the redzone in valid memory
-- Heap allocations (`malloc`/`free`) are not yet instrumented
 - Multithreaded programs are not supported
 - Requires `-O1` or higher for use-after-scope detection 
   (`llvm.lifetime.end` markers only appear with optimization enabled)
