@@ -160,6 +160,7 @@ def main():
 
     print("\n=== Heap Tests ===")
     run_test("tests/double_free/double_free.c", should_trigger=True) 
+    run_test("tests/heap_overflow/test_strcpy.c", should_trigger=True) 
     run_test("tests/heap_overflow/heap_overflow.c", should_trigger=True) 
     run_test("tests/use_after_free/use_after_free.c", should_trigger=True)
 
