@@ -213,9 +213,9 @@ impl<'a, 'ctx> Instrument<'a, 'ctx> {
 
         let rz_size_val = self.context.i64_type().const_int(rz_size as u64, false);
 
-        self.call_poison(left_rz_ptr, rz_size_val, 0xf1);
+        self.call_poison(left_rz_ptr, rz_size_val, 0xfa);
         self.call_unpoison(inst_ptr, size);
-        self.call_poison(right_rz_ptr, rz_size_val, 0xf1);
+        self.call_poison(right_rz_ptr, rz_size_val, 0xfa);
 
         let heap_info = HeapInfo {
             size,
