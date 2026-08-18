@@ -12,6 +12,7 @@ impl Report {
         let error_desc = match poison_type {
             0xf1 => "stack-left-redzone (Stack Buffer Overflow)",
             0xf3 => "stack-right-redzone (Stack Buffer Overflow)",
+            0xfa => "heap-redzone (Heap Buffer Overflow)",
             0xf8 => "stack-use-after-scope",
             0xfd => "heap-use-after-free",
             _ => "unknown-poison-access",
